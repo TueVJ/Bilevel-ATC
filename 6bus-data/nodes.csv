@@ -1,0 +1,7 @@
+ID,name,country,voltage,latitude,longitude
+n1,n1,Z1,380,3,0
+n2,n2,Z1,380,1,-1
+n3,n3,Z1,380,1,1
+n4,n4,Z2,380,-1,-1
+n5,n5,Z2,380,-1,1
+n6,n6,Z2,380,-3,0

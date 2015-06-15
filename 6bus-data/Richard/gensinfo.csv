@@ -1,0 +1,11 @@
+id,key,value
+g1,mincapacity,0
+g1,maxcapacity,150
+g1,mcost,10
+g2,mincapacity,0
+g2,maxcapacity,150
+g2,mcost,30
+g3,mincapacity,0
+g3,maxcapacity,300
+g3,mcost,50
+
