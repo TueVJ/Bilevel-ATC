@@ -58,11 +58,7 @@ class Bilevel_ATC:
         self.data.G = load_network()
         self.data.nodeorder = self.data.G.nodes()
         self.data.lineorder = self.data.G.edges()
-        ###
-        #   MISSING: Logic to handle zone data
-        #   MISSING: Zonal projection matrix
-        #   self.data.zoneorder = ...
-        ###
+        self.data.linelimit = nx.get_edge_attributes(self.data.G, 'limit')
         self.data.node_to_zone = nx.get_node_attributes(self.data.G, 'country')
         self.data.zone_to_nodes = invert_dict(self.data.node_to_zone)
         self.data.zoneorder = self.data.zone_to_nodes.keys()
@@ -85,9 +81,10 @@ class Bilevel_ATC:
 
     def _load_intial_data(self, initial_wind_da, initial_wind_rt, initial_load):
         self.data.taus = [0]  # np.arange(len(initial_load.T))
-        self.data.load = initial_load
-        self.data.wind_da = initial_wind_da
-        self.data.wind_rt = initial_wind_rt
+        self.data.load_n_rt = initial_load.to_dict()
+        self.data.load_z_da = {z: sum(self.data.load_n_rt[n] for n in self.data.zone_to_nodes[z]) for z in self.data.zoneorder}
+        self.data.wind_n_rt = initial_wind_rt.to_dict()
+        self.data.wind_z_da = {z: sum(self.data.wind_n_rt[n] for n in self.data.zone_to_nodes[z]) for z in self.data.zoneorder}
 
     ###
     #   Model Building
@@ -95,8 +92,8 @@ class Bilevel_ATC:
     def _build_model(self):
         self.model = gb.Model()
         self._build_variables()
-        self._build_objective()
-        self._build_constraints()
+        # self._build_objective()
+        # self._build_constraints()
         self.model.update()
 
     def _build_variables(self):
@@ -107,9 +104,10 @@ class Bilevel_ATC:
         zones = self.data.zoneorder
         edges = self.data.edgeorder
         lines = self.data.lineorder
-        wind_da = self.data.wind_da
-        wind_rt = self.data.wind_rt
-        load = self.data.load
+        wind_n_rt = self.data.wind_n_rt
+        wind_z_da = self.data.wind_z_da
+        load_n_rt = self.data.load_n_rt
+        load_z_da = self.data.load_z_da
 
         m = self.model
 
@@ -139,16 +137,16 @@ class Bilevel_ATC:
             for n in nodes:
                 # renewuse[n, t] = m.addVar(lb=0.0, ub=solar[nodeindex[n], t] + wind[nodeindex[n], t])
                 # loadshed[n, t] = m.addVar(lb=0.0, ub=load[nodeindex[n], t])
-                renewuse_rt[n, t] = m.addVar(lb=0.0, ub=wind_rt[nodeindex[n]])
-                loadshed_rt[n, t] = m.addVar(lb=0.0, ub=load[nodeindex[n]])
+                renewuse_rt[n, t] = m.addVar(lb=0.0, ub=wind_n_rt[n])
+                loadshed_rt[n, t] = m.addVar(lb=0.0, ub=load_n_rt[n])
         self.variables.renewuse_rt = renewuse_rt
         self.variables.loadshed_rt = loadshed_rt
 
         renewuse_da, loadshed_da = {}, {}
         for t in taus:
             for z in zones:
-                renewuse_da[z, t] = m.addVar(lb=0.0, ub=wind_da[nodeindex[n]])
-                loadshed_da[z, t] = m.addVar(lb=0.0, ub=load[nodeindex[n]])
+                renewuse_da[z, t] = m.addVar(lb=0.0, ub=wind_z_da[z])
+                loadshed_da[z, t] = m.addVar(lb=0.0, ub=load_z_da[z])
         self.variables.renewuse_da = renewuse_da
         self.variables.loadshed_da = loadshed_da
 
@@ -297,28 +295,28 @@ class Bilevel_ATC:
         bc_gprod_down_nn = {}
         for t in taus:
             for g in generators:
-                bc_gprod_da_up[g, t] = m.addVar(VType='B')
-                bc_gprod_rt_up[g, t] = m.addVar(VType='B')
-                bc_gprod_da_down[g, t] = m.addVar(VType='B')
-                bc_gprod_rt_down[g, t] = m.addVar(VType='B')
-                bc_gprod_up_nn[g, t] = m.addVar(VType='B')
-                bc_gprod_down_nn[g, t] = m.addVar(VType='B')
+                bc_gprod_da_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_gprod_rt_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_gprod_da_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_gprod_rt_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_gprod_up_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_gprod_down_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
         self.variables.bc_gprod_da_up = bc_gprod_da_up
         self.variables.bc_gprod_da_down = bc_gprod_da_down
         self.variables.bc_gprod_rt_up = bc_gprod_rt_up
         self.variables.bc_gprod_rt_down = bc_gprod_rt_down
         self.variables.bc_gprod_up_nn = bc_gprod_up_nn
-        self.variables.bc_gprod_down_nn = b_gprod_down_nn
+        self.variables.bc_gprod_down_nn = bc_gprod_down_nn
 
         # Renewables and load spilled in node at time t
         bc_renewuse_da_up, bc_loadshed_da_up = {}, {}
         bc_renewuse_da_down, bc_loadshed_da_down = {}, {}
         for t in taus:
             for z in zones:
-                bc_renewuse_da_up[z, t] = m.addVar(VType='B')
-                bc_renewuse_da_down[z, t] = m.addVar(VType='B')
-                bc_loadshed_da_up[z, t] = m.addVar(VType='B')
-                bc_loadshed_da_down[z, t] = m.addVar(VType='B')
+                bc_renewuse_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_renewuse_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_loadshed_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_loadshed_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
         self.variables.bc_renewuse_da_up = bc_renewuse_da_up
         self.variables.bc_loadshed_da_up = bc_loadshed_da_up
         self.variables.bc_renewuse_da_down = bc_renewuse_da_down
@@ -328,10 +326,10 @@ class Bilevel_ATC:
         bc_renewuse_rt_down, bc_loadshed_rt_down = {}, {}
         for t in taus:
             for n in nodes:
-                bc_renewuse_rt_up[n, t] = m.addVar(VType='B')
-                bc_renewuse_rt_down[n, t] = m.addVar(VType='B')
-                bc_loadshed_rt_up[n, t] = m.addVar(VType='B')
-                bc_loadshed_rt_down[n, t] = m.addVar(VType='B')
+                bc_renewuse_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_renewuse_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_loadshed_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_loadshed_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
         self.variables.bc_renewuse_rt_up = bc_renewuse_rt_up
         self.variables.bc_loadshed_rt_up = bc_loadshed_rt_up
         self.variables.bc_renewuse_rt_down = bc_renewuse_rt_down
@@ -342,8 +340,8 @@ class Bilevel_ATC:
         bc_edgeflow_da_down = {}
         for e in edges:
             for t in taus:
-                bc_edgeflow_da_up[e, t] = m.addVar(VType='B')
-                bc_edgeflow_da_down[e, t] = m.addVar(VType='B')
+                bc_edgeflow_da_up[e, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_edgeflow_da_down[e, t] = m.addVar(vtype=gb.GRB.BINARY)
         self.variables.bc_edgeflow_da_up = bc_edgeflow_da_up
         self.variables.bc_edgeflow_da_down = bc_edgeflow_da_down
 
@@ -352,8 +350,8 @@ class Bilevel_ATC:
         bc_lineflow_rt_down = {}
         for l in lines:
             for t in taus:
-                bc_lineflow_rt_up[l, t] = m.addVar(VType='B')
-                bc_lineflow_rt_down[l, t] = m.addVar(VType='B')
+                bc_lineflow_rt_up[l, t] = m.addVar(vtype=gb.GRB.BINARY)
+                bc_lineflow_rt_down[l, t] = m.addVar(vtype=gb.GRB.BINARY)
         self.variables.bc_lineflow_rt_up = bc_lineflow_rt_up
         self.variables.bc_lineflow_rt_down = bc_lineflow_rt_down
 
@@ -425,3 +423,17 @@ class Bilevel_ATC:
 
     def _update_constraints(self):
         pass
+
+# Temporary testing code
+
+import pandas as pd
+
+load = pd.read_csv('6bus-data/load.csv')
+wind_da = pd.read_csv('6bus-data/wind.csv')
+wind_rt = pd.read_csv('6bus-data/wind.csv')
+
+load = load.set_index('Time').ix[0]
+wind_da = wind_da.set_index('Time').ix[0]
+wind_rt = wind_rt.set_index('Time').ix[0]/0.9
+
+m = Bilevel_ATC(wind_da, wind_rt, load)
