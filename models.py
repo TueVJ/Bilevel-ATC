@@ -7,6 +7,8 @@ from symmetrize_dict import symmetrize_dict
 from itertools import izip
 from collections import defaultdict
 from load_network import load_network
+from load_generators import load_generators
+from invert_dict import invert_dict
 
 ####
 #  Class for the bilevel optimization problem, big-M version
@@ -61,13 +63,24 @@ class Bilevel_ATC:
         #   MISSING: Zonal projection matrix
         #   self.data.zoneorder = ...
         ###
+        self.data.node_to_zone = nx.get_node_attributes(self.data.G, 'country')
+        self.data.zone_to_nodes = invert_dict(self.data.node_to_zone)
+        self.data.zoneorder = self.data.zone_to_nodes.keys()
+        edges = set(
+            (z1, z2) for n1, n2 in self.data.lineorder
+            for z1 in [self.data.node_to_zone[n1]] for z2 in [self.data.node_to_zone[n2]]
+            if z1 != z2)
+        self.data.edgeorder = list(edges)
         pass
 
     def _load_generator_data(self):
-        ###
-        #   MISSING: Generator loading
-        #   MISSING: Generator list
-        ###
+        self.data.gendf = load_generators()
+        self.data.generators = self.data.gendf.index
+        self.data.generatorinfo = self.data.gendf.T.to_dict()
+        self.data.gen_to_node = self.data.gendf.origin.to_dict()
+        self.data.node_to_generators = invert_dict(self.data.gen_to_node)
+        self.data.gen_to_zone = self.data.gendf.country.to_dict()
+        self.data.zone_to_generators = invert_dict(self.data.gen_to_zone)
         pass
 
     def _load_intial_data(self, initial_wind_da, initial_wind_rt, initial_load):
@@ -87,16 +100,15 @@ class Bilevel_ATC:
         self.model.update()
 
     def _build_variables(self):
-        # taus = self.data.taus
+        taus = self.data.taus
         generators = self.data.generators
         gendata = self.data.generatorinfo
         nodes = self.data.nodeorder
-        nodeindex = self.data.nodeindex
         zones = self.data.zoneorder
-        zoneindex = self.data.zoneindex
         edges = self.data.edgeorder
         lines = self.data.lineorder
-        wind = self.data.wind
+        wind_da = self.data.wind_da
+        wind_rt = self.data.wind_rt
         load = self.data.load
 
         m = self.model
