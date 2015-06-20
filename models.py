@@ -67,6 +67,8 @@ class Bilevel_ATC:
             for z1 in [self.data.node_to_zone[n1]] for z2 in [self.data.node_to_zone[n2]]
             if z1 != z2)
         self.data.edgeorder = list(edges)
+        self.data.angle_to_injection, self.data.angle_to_flow = self._get_flow_matrices()
+        self.data.slack_bus = self.data.nodeorder[0]
         pass
 
     def _load_generator_data(self):
@@ -92,8 +94,8 @@ class Bilevel_ATC:
     def _build_model(self):
         self.model = gb.Model()
         self._build_variables()
-        # self._build_objective()
-        # self._build_constraints()
+        self._build_objective()
+        self._build_constraints()
         self.model.update()
 
     def _build_variables(self):
@@ -116,60 +118,55 @@ class Bilevel_ATC:
         ###
 
         # Production of generator g at time t
-        gprod_da = {}
-        gprod_rt = {}
-        gprod_up = {}
-        gprod_down = {}
+        self.variables.gprod_da = {}
+        self.variables.gprod_rt = {}
+        self.variables.gprod_up = {}
+        self.variables.gprod_down = {}
         for t in taus:
             for g in generators:
-                gprod_da[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
-                gprod_rt[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
-                gprod_up[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
-                gprod_down[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
-        self.variables.gprod_da = gprod_da
-        self.variables.gprod_rt = gprod_rt
-        self.variables.gprod_up = gprod_up
-        self.variables.gprod_down = gprod_down
+                self.variables.gprod_da[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
+                self.variables.gprod_rt[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
+                self.variables.gprod_up[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
+                self.variables.gprod_down[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'])
 
         # Renewables and load spilled in node at time t
-        renewuse_rt, loadshed_rt = {}, {}
+        self.variables.renewuse_rt, self.variables.loadshed_rt = {}, {}
         for t in taus:
             for n in nodes:
-                # renewuse[n, t] = m.addVar(lb=0.0, ub=solar[nodeindex[n], t] + wind[nodeindex[n], t])
-                # loadshed[n, t] = m.addVar(lb=0.0, ub=load[nodeindex[n], t])
-                renewuse_rt[n, t] = m.addVar(lb=0.0, ub=wind_n_rt[n])
-                loadshed_rt[n, t] = m.addVar(lb=0.0, ub=load_n_rt[n])
-        self.variables.renewuse_rt = renewuse_rt
-        self.variables.loadshed_rt = loadshed_rt
+                # self.variables.renewuse[n, t] = m.addVar(lb=0.0, ub=solar[nodeindex[n], t] + wind[nodeindex[n], t])
+                # self.variables.loadshed[n, t] = m.addVar(lb=0.0, ub=load[nodeindex[n], t])
+                self.variables.renewuse_rt[n, t] = m.addVar(lb=0.0, ub=wind_n_rt[n])
+                self.variables.loadshed_rt[n, t] = m.addVar(lb=0.0, ub=load_n_rt[n])
 
-        renewuse_da, loadshed_da = {}, {}
+        self.variables.renewuse_da, self.variables.loadshed_da = {}, {}
         for t in taus:
             for z in zones:
-                renewuse_da[z, t] = m.addVar(lb=0.0, ub=wind_z_da[z])
-                loadshed_da[z, t] = m.addVar(lb=0.0, ub=load_z_da[z])
-        self.variables.renewuse_da = renewuse_da
-        self.variables.loadshed_da = loadshed_da
+                self.variables.renewuse_da[z, t] = m.addVar(lb=0.0, ub=wind_z_da[z])
+                self.variables.loadshed_da[z, t] = m.addVar(lb=0.0, ub=load_z_da[z])
 
         # Voltage angle at node n for time t
-        voltageangle = {}
+        self.variables.voltageangle = {}
         for n in nodes:
             for t in taus:
-                voltageangle[n, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.voltageangle = voltageangle
+                self.variables.voltageangle[n, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         # Power flow on edge e
-        edgeflow_da = {}
+        self.variables.edgeflow_da = {}
         for e in edges:
             for t in taus:
-                edgeflow_da[e, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.edgeflow_da = edgeflow_da
+                self.variables.edgeflow_da[e, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         # Power flow on line l
-        lineflow_rt = {}
+        self.variables.lineflow_rt = {}
         for l in lines:
             for t in taus:
-                lineflow_rt[l, t] = m.addVar(lb=-self.data.linelimit[l], ub=self.data.linelimit[l])
-        self.variables.lineflow_rt = lineflow_rt
+                self.variables.lineflow_rt[l, t] = m.addVar(lb=-self.data.linelimit[l], ub=self.data.linelimit[l])
+
+        # Power flow on edge e
+        self.variables.ATC = {}
+        for e in edges:
+            for t in taus:
+                self.variables.ATC[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
         ###
         #  Dual variables
@@ -178,182 +175,141 @@ class Bilevel_ATC:
         # # Non-negative duals
 
         # Generator production limits
-        d_gprod_da_up = {}
-        d_gprod_da_down = {}
-        d_gprod_rt_up = {}
-        d_gprod_rt_down = {}
-        d_gprod_up_nn = {}
-        d_gprod_down_nn = {}
+        self.variables.d_gprod_da_up = {}
+        self.variables.d_gprod_da_down = {}
+        self.variables.d_gprod_rt_up = {}
+        self.variables.d_gprod_rt_down = {}
+        self.variables.d_gprod_up_nn = {}
+        self.variables.d_gprod_down_nn = {}
         for t in taus:
             for g in generators:
-                d_gprod_da_up[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_gprod_rt_up[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_gprod_da_down[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_gprod_rt_down[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_gprod_up_nn[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_gprod_down_nn[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-        self.variables.d_gprod_da_up = d_gprod_da_up
-        self.variables.d_gprod_da_down = d_gprod_da_down
-        self.variables.d_gprod_rt_up = d_gprod_rt_up
-        self.variables.d_gprod_rt_down = d_gprod_rt_down
-        self.variables.d_gprod_up_nn = d_gprod_up_nn
-        self.variables.d_gprod_down_nn = d_gprod_down_nn
+                self.variables.d_gprod_da_up[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_gprod_rt_up[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_gprod_da_down[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_gprod_rt_down[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_gprod_up_nn[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_gprod_down_nn[g, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
         # Renewables and load spilled in node at time t
-        d_renewuse_da_up, d_loadshed_da_up = {}, {}
-        d_renewuse_da_down, d_loadshed_da_down = {}, {}
+        self.variables.d_renewuse_da_up, self.variables.d_loadshed_da_up = {}, {}
+        self.variables.d_renewuse_da_down, self.variables.d_loadshed_da_down = {}, {}
         for t in taus:
             for z in zones:
-                d_renewuse_da_up[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_renewuse_da_down[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_loadshed_da_up[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_loadshed_da_down[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-        self.variables.d_renewuse_da_up = d_renewuse_da_up
-        self.variables.d_loadshed_da_up = d_loadshed_da_up
-        self.variables.d_renewuse_da_down = d_renewuse_da_down
-        self.variables.d_loadshed_da_down = d_loadshed_da_down
+                self.variables.d_renewuse_da_up[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_renewuse_da_down[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_loadshed_da_up[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_loadshed_da_down[z, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
-        d_renewuse_rt_up, d_loadshed_rt_up = {}, {}
-        d_renewuse_rt_down, d_loadshed_rt_down = {}, {}
+        self.variables.d_renewuse_rt_up, self.variables.d_loadshed_rt_up = {}, {}
+        self.variables.d_renewuse_rt_down, self.variables.d_loadshed_rt_down = {}, {}
         for t in taus:
             for n in nodes:
-                d_renewuse_rt_up[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_renewuse_rt_down[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_loadshed_rt_up[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_loadshed_rt_down[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-        self.variables.d_renewuse_rt_up = d_renewuse_rt_up
-        self.variables.d_loadshed_rt_up = d_loadshed_rt_up
-        self.variables.d_renewuse_rt_down = d_renewuse_rt_down
-        self.variables.d_loadshed_rt_down = d_loadshed_rt_down
+                self.variables.d_renewuse_rt_up[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_renewuse_rt_down[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_loadshed_rt_up[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_loadshed_rt_down[n, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
         # Power flow on edge e
-        d_edgeflow_da_up = {}
-        d_edgeflow_da_down = {}
+        self.variables.d_edgeflow_da_up = {}
+        self.variables.d_edgeflow_da_down = {}
         for e in edges:
             for t in taus:
-                d_edgeflow_da_up[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_edgeflow_da_down[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-        self.variables.d_edgeflow_da_up = d_edgeflow_da_up
-        self.variables.d_edgeflow_da_down = d_edgeflow_da_down
+                self.variables.d_edgeflow_da_up[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_edgeflow_da_down[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
         # Power flow on line l
-        d_lineflow_rt_up = {}
-        d_lineflow_rt_down = {}
+        self.variables.d_lineflow_rt_up = {}
+        self.variables.d_lineflow_rt_down = {}
         for l in lines:
             for t in taus:
-                d_lineflow_rt_up[l, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-                d_lineflow_rt_down[l, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
-        self.variables.d_lineflow_rt_up = d_lineflow_rt_up
-        self.variables.d_lineflow_rt_down = d_lineflow_rt_down
+                self.variables.d_lineflow_rt_up[l, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
+                self.variables.d_lineflow_rt_down[l, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY)
 
         # # Unbounded duals
 
         # Price DA
-        d_price_da = {}
+        self.variables.d_price_da = {}
         for t in taus:
             for z in zones:
-                d_price_da[z, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.d_price_da = d_price_da
+                self.variables.d_price_da[z, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         # Price RT
-        d_price_rt = {}
+        self.variables.d_price_rt = {}
         for t in taus:
             for n in nodes:
-                d_price_rt[n, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.d_price_rt = d_price_rt
+                self.variables.d_price_rt[n, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         # Linking day-ahead and real-time production
-        d_gprod_link = {}
+        self.variables.d_gprod_link = {}
         for t in taus:
             for g in generators:
-                d_gprod_link[g, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.d_gprod_link = d_gprod_link
+                self.variables.d_gprod_link[g, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         # linking to voltage angles
-        d_voltage_angle_link = {}
+        self.variables.d_voltage_angle_link = {}
         for l in lines:
             for t in taus:
-                d_voltage_angle_link[l, t] = m.addVar(lb=-self.data.linelimit[l], ub=self.data.linelimit[l])
-        self.variables.d_voltage_angle_link = d_voltage_angle_link
+                self.variables.d_voltage_angle_link[l, t] = m.addVar(lb=-self.data.linelimit[l], ub=self.data.linelimit[l])
 
         # Slack bus dual
-        d_slack_bus = {}
+        self.variables.d_slack_bus = {}
         for t in taus:
-            d_slack_bus[t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
-        self.variables.d_slack_bus = d_slack_bus
+            self.variables.d_slack_bus[t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY)
 
         ###
         #  Complementarity binary variables
         ###
 
         # Generation limits
-        bc_gprod_da_up = {}
-        bc_gprod_da_down = {}
-        bc_gprod_rt_up = {}
-        bc_gprod_rt_down = {}
-        bc_gprod_up_nn = {}
-        bc_gprod_down_nn = {}
+        self.variables.bc_gprod_da_up = {}
+        self.variables.bc_gprod_da_down = {}
+        self.variables.bc_gprod_rt_up = {}
+        self.variables.bc_gprod_rt_down = {}
+        self.variables.bc_gprod_up_nn = {}
+        self.variables.bc_gprod_down_nn = {}
         for t in taus:
             for g in generators:
-                bc_gprod_da_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_gprod_rt_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_gprod_da_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_gprod_rt_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_gprod_up_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_gprod_down_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
-        self.variables.bc_gprod_da_up = bc_gprod_da_up
-        self.variables.bc_gprod_da_down = bc_gprod_da_down
-        self.variables.bc_gprod_rt_up = bc_gprod_rt_up
-        self.variables.bc_gprod_rt_down = bc_gprod_rt_down
-        self.variables.bc_gprod_up_nn = bc_gprod_up_nn
-        self.variables.bc_gprod_down_nn = bc_gprod_down_nn
+                self.variables.bc_gprod_da_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_gprod_rt_up[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_gprod_da_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_gprod_rt_down[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_gprod_up_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_gprod_down_nn[g, t] = m.addVar(vtype=gb.GRB.BINARY)
 
         # Renewables and load spilled in node at time t
-        bc_renewuse_da_up, bc_loadshed_da_up = {}, {}
-        bc_renewuse_da_down, bc_loadshed_da_down = {}, {}
+        self.variables.bc_renewuse_da_up, self.variables.bc_loadshed_da_up = {}, {}
+        self.variables.bc_renewuse_da_down, self.variables.bc_loadshed_da_down = {}, {}
         for t in taus:
             for z in zones:
-                bc_renewuse_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_renewuse_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_loadshed_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_loadshed_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
-        self.variables.bc_renewuse_da_up = bc_renewuse_da_up
-        self.variables.bc_loadshed_da_up = bc_loadshed_da_up
-        self.variables.bc_renewuse_da_down = bc_renewuse_da_down
-        self.variables.bc_loadshed_da_down = bc_loadshed_da_down
+                self.variables.bc_renewuse_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_renewuse_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_loadshed_da_up[z, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_loadshed_da_down[z, t] = m.addVar(vtype=gb.GRB.BINARY)
 
-        bc_renewuse_rt_up, bc_loadshed_rt_up = {}, {}
-        bc_renewuse_rt_down, bc_loadshed_rt_down = {}, {}
+        self.variables.bc_renewuse_rt_up, self.variables.bc_loadshed_rt_up = {}, {}
+        self.variables.bc_renewuse_rt_down, self.variables.bc_loadshed_rt_down = {}, {}
         for t in taus:
             for n in nodes:
-                bc_renewuse_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_renewuse_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_loadshed_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_loadshed_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
-        self.variables.bc_renewuse_rt_up = bc_renewuse_rt_up
-        self.variables.bc_loadshed_rt_up = bc_loadshed_rt_up
-        self.variables.bc_renewuse_rt_down = bc_renewuse_rt_down
-        self.variables.bc_loadshed_rt_down = bc_loadshed_rt_down
+                self.variables.bc_renewuse_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_renewuse_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_loadshed_rt_up[n, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_loadshed_rt_down[n, t] = m.addVar(vtype=gb.GRB.BINARY)
 
         # Power flow on edge e
-        bc_edgeflow_da_up = {}
-        bc_edgeflow_da_down = {}
+        self.variables.bc_edgeflow_da_up = {}
+        self.variables.bc_edgeflow_da_down = {}
         for e in edges:
             for t in taus:
-                bc_edgeflow_da_up[e, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_edgeflow_da_down[e, t] = m.addVar(vtype=gb.GRB.BINARY)
-        self.variables.bc_edgeflow_da_up = bc_edgeflow_da_up
-        self.variables.bc_edgeflow_da_down = bc_edgeflow_da_down
+                self.variables.bc_edgeflow_da_up[e, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_edgeflow_da_down[e, t] = m.addVar(vtype=gb.GRB.BINARY)
 
         # Power flow on line l
-        bc_lineflow_rt_up = {}
-        bc_lineflow_rt_down = {}
+        self.variables.bc_lineflow_rt_up = {}
+        self.variables.bc_lineflow_rt_down = {}
         for l in lines:
             for t in taus:
-                bc_lineflow_rt_up[l, t] = m.addVar(vtype=gb.GRB.BINARY)
-                bc_lineflow_rt_down[l, t] = m.addVar(vtype=gb.GRB.BINARY)
-        self.variables.bc_lineflow_rt_up = bc_lineflow_rt_up
-        self.variables.bc_lineflow_rt_down = bc_lineflow_rt_down
+                self.variables.bc_lineflow_rt_up[l, t] = m.addVar(vtype=gb.GRB.BINARY)
+                self.variables.bc_lineflow_rt_down[l, t] = m.addVar(vtype=gb.GRB.BINARY)
 
         m.update()
 
@@ -364,8 +320,15 @@ class Bilevel_ATC:
 
         m = self.model
         m.setObjective(
-            gb.quicksum(self.data.generatorinfo[gen]['lincost']*self.variables.gprod[gen, t] for gen in self.data.generators for t in taus) +
-            gb.quicksum(self.variables.renewuse[n, t]*defaults.VOLR + self.variables.loadshed[n, t]*defaults.VOLL for n in nodes for t in taus),
+            gb.quicksum(
+                self.data.generatorinfo[g]['lincost']*self.variables.gprod_rt[g, t] +
+                defaults.up_redispatch_premium*self.variables.gprod_up[g, t] +
+                defaults.down_redispatch_premium*self.variables.gprod_down[g, t]
+                for g in self.data.generators for t in taus) +
+            gb.quicksum(
+                self.variables.renewuse_rt[n, t]*defaults.renew_price +
+                self.variables.loadshed_rt[n, t]*defaults.VOLL
+                for n in nodes for t in taus),
             gb.GRB.MINIMIZE)
 
     def _build_constraints(self):
@@ -373,44 +336,84 @@ class Bilevel_ATC:
         generators = self.data.generators
         gendata = self.data.generatorinfo
         nodes = self.data.nodeorder
-        nodeindex = self.data.nodeindex
+        zones = self.data.zoneorder
         edges = self.data.edgeorder
-        wind_da = self.data.wind_da
-        wind_rt = self.data.wind_rt
-        load = self.data.load
+        lines = self.data.lineorder
+        wind_n_rt = self.data.wind_n_rt
+        wind_z_da = self.data.wind_z_da
+        load_n_rt = self.data.load_n_rt
+        load_z_da = self.data.load_z_da
 
         m = self.model
-        voltageangle, nodeinjection, edgeflow = self.variables.voltageangle, self.variables.nodeinjection, self.variables.edgeflow
-        loadshed, renewspill, gprod = self.variables.loadshed, self.variables.renewspill, self.variables.gprod
 
-        nodeangle = {}
+        # Flow to voltage angle coupling
+        self.constraints.flowangle = {}
+        anodes = np.array(nodes)
         for t in taus:
-            for n, Bline in izip(nodes, self.data.angle_to_injection):
-                nz = np.nonzero(Bline)
-                nodeangle[n, t] = m.addConstr(gb.LinExpr(Bline[nz], [voltageangle[k, t] for k in np.array(nodes)[nz]]),
-                                              gb.GRB.EQUAL, nodeinjection[n, t], name="CON: node {0} angle from injection in hour {1}".format(n, t))
-        self.constraints.nodeangle = nodeangle
-
-        flowangle = {}
-        for t in taus:
-            for e, Kline in izip(edges, self.data.angle_to_flow):
+            for l, Kline in izip(lines, self.data.angle_to_flow):
                 nz = np.nonzero(Kline)
-                flowangle[e, t] = m.addConstr(gb.LinExpr(Kline[nz], [voltageangle[k, t] for k in nodes[nz]]), gb.GRB.EQUAL, edgeflow[e, t])
-        self.constraints.flowangle = flowangle
+                self.constraints.flowangle[l, t] = m.addConstr(
+                    gb.LinExpr(Kline[nz], [self.variables.voltageangle[n, t] for n in anodes[nz]]),
+                    gb.GRB.EQUAL,
+                    self.variables.lineflow_rt[l, t])
 
-        powerbalance = {}
+        # RT power balance
+        self.constraints.powerbalance_rt = {}
         for n in nodes:
             for t in taus:
-                powerbalance[n, t] = m.addConstr(nodeinjection[n, t] - loadshed[n, t] + renewspill[n, t]
-                                                 - gb.quicksum(gprod[gen, t] for gen in self.data.generatorsfornode[n]),
-                                                 gb.GRB.EQUAL,
-                                                 solar[nodeindex[n], t] + wind[nodeindex[n], t] - load[nodeindex[n], t])
-        self.constraints.powerbalance = powerbalance
+                self.constraints.powerbalance_rt[n, t] = m.addConstr(
+                    gb.quicksum(self.variables.gprod_rt[gen, t] for gen in self.data.node_to_generators[n])
+                    + self.variables.loadshed_rt[n, t] + self.variables.renewuse_rt[n, t]
+                    - gb.quicksum(self.variables.lineflow_rt[l, t] for l in lines if l[0] == n)
+                    + gb.quicksum(self.variables.lineflow_rt[l, t] for l in lines if l[1] == n),
+                    gb.GRB.EQUAL,
+                    self.data.load_n_rt[n])
+                # self.data.load_n_rt[n, t]) # !!!
 
-        systembalance = {}
+        # Coupling generator production DA and RT
+        self.constraints.gencoupling = {}
+        for g in generators:
+            for t in taus:
+                self.constraints.gencoupling[n, t] = m.addConstr(
+                    self.variables.gprod_rt[g, t],
+                    gb.GRB.EQUAL,
+                    self.variables.gprod_da[g, t] + self.variables.gprod_up[g, t] - self.variables.gprod_down[g, t])
+                # self.data.load_n_rt[n, t]) # !!!
+
+        # DA power balance
+        self.constraints.powerbalance_da = {}
+        for z in zones:
+            for t in taus:
+                self.constraints.powerbalance_da[z, t] = m.addConstr(
+                    gb.quicksum(self.variables.gprod_da[gen, t] for gen in self.data.zone_to_generators[z])
+                    + self.variables.loadshed_da[z, t] + self.variables.renewuse_da[z, t]
+                    - gb.quicksum(self.variables.edgeflow_da[e, t] for e in lines if e[0] == z)
+                    + gb.quicksum(self.variables.edgeflow_da[e, t] for e in lines if e[1] == z),
+                    gb.GRB.EQUAL,
+                    self.data.load_z_da[z])
+                # self.data.load_z_da[z, t]) # !!!
+
+        # ATC edge flow limits
+        self.constraints.ATC_limit_up = {}
+        self.constraints.ATC_limit_down = {}
+        for e in edges:
+            for t in taus:
+                self.constraints.ATC_limit_up[e, t] = m.addConstr(
+                    self.variables.edgeflow_da[e, t],
+                    gb.GRB.LESS_EQUAL,
+                    self.variables.ATC[e, t])
+                self.constraints.ATC_limit_down[e, t] = m.addConstr(
+                    - self.variables.ATC[e, t],
+                    gb.GRB.LESS_EQUAL,
+                    self.variables.edgeflow_da[e, t])
+
+        # Slack bus
+        self.constraints.slack_bus_const = {}
         for t in taus:
-            systembalance[t] = m.addConstr(gb.quicksum(nodeinjection[n, t] for n in nodes), gb.GRB.EQUAL, 0.0, name='System balance at time {:.00f}'.format(t))
-        self.constraints.systembalance = systembalance
+            self.constraints.slack_bus_const[t] = m.addConstr(
+                self.variables.voltageangle[self.data.slack_bus, t],
+                gb.GRB.EQUAL,
+                0)
 
     def _build_results(self):
         pass
@@ -423,6 +426,21 @@ class Bilevel_ATC:
 
     def _update_constraints(self):
         pass
+
+    ###
+    #   Utility functions
+    ###
+    def _get_flow_matrices(self):
+        G = self.data.G
+        nodeorder = self.data.nodeorder
+        lineorder = self.data.lineorder
+        lap = np.asarray(nx.laplacian_matrix(G, weight='Y', nodelist=nodeorder))
+        Xd = symmetrize_dict(nx.get_edge_attributes(G, 'X'))
+        Xvec = np.array([Xd[tuple(e)] for e in lineorder])
+        K = nx.incidence_matrix(G, oriented=True, nodelist=nodeorder, edgelist=lineorder)
+        angle_to_flow = np.squeeze(np.asarray(np.dot(np.diag(1/Xvec), K.T)))
+        angle_to_injection = lap
+        return angle_to_injection, angle_to_flow
 
 # Temporary testing code
 

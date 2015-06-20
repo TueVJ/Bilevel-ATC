@@ -16,6 +16,7 @@ VOLR = 20
 redispatch_premium = 4
 up_redispatch_premium = 7.90
 down_redispatch_premium = 8.59
+renew_price = -20
 
 nodearea_pv_file = 'Node_area_PV.npy'
 nodearea_wind_off_file = 'Node_area_wind_offshore.npy'
