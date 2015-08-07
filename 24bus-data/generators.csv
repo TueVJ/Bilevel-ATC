@@ -1,0 +1,13 @@
+ID,name,country,origin,latitude,longitude,status,primaryfuel,secondaryfuel,capacity,lincost,cyclecost,minuptime,mindowntime,minonlinecapacity
+g18,g18,Z2,n18,1,1,Online,Nuclear,None,400,5.47,0,1,1,100
+g21,g21,Z2,n21,1,1,Online,Nuclear,None,400,5.47,0,1,1,100
+g1,g1,Z1,n1,1,1,Online,Coal,None,152,13.32,1430.4,8,4,30.4
+g2,g2,Z1,n2,1,1,Online,Coal,None,152,13.32,1430.4,8,4,30.4
+g15b,g15b,Z2,n15,1,1,Online,Coal,None,155,10.52,312,8,8,54.25
+g16,g16,Z2,n16,1,1,Online,Coal,None,155,10.52,312,8,8,54.25
+g23a,g23a,Z2,n23,1,1,Online,Coal,None,310,10.52,624,8,8,108.5
+g23b,g23b,Z2,n23,1,1,Online,Coal,None,350,10.89,2298,8,8,140
+g7,g7,Z1,n7,1,1,Online,Oil,None,350,20.70,1725,8,8,75
+g13,g13,Z2,n13,1,1,Online,Oil,None,591,20.93,3056.7,12,10,206.85
+g15a,g15a,Z2,n15,1,1,Online,Oil,None,60,26.11,437,4,2,12
+g22,g22,Z2,n22,1,1,Online,Hydro,None,300,0.00,0,0,0,300
