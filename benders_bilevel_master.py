@@ -45,12 +45,12 @@ class Benders_Master:
         # Initial solution
         self.model.optimize()
         # Build subproblem from solution
-        self.submodel = Benders_Subproblem(self, scenario='s0')
+        self.submodels = {s: Benders_Subproblem(self, scenario=s) for s in self.data.scenarios}
         # In future, update to list of subproblems
         # OR subproblem class is extended to contain multiple optimization problems
         # (better encapsulation in second approach, better modularity in first).
-        self.submodel.update_fixed_vars(self)
-        self.submodel.optimize()
+        [sm.update_fixed_vars(self) for sm in self.submodels.itervalues()]
+        [sm.optimize() for sm in self.submodels.itervalues()]
         self._add_cut()
         self._update_bounds()
         self._save_vars()
@@ -58,8 +58,8 @@ class Benders_Master:
         while self.data.ub > self.data.lb + self.data.epsilon and len(self.data.cutlist) < 10:
             self.model.reset()
             self.model.optimize()
-            self.submodel.update_fixed_vars(self)
-            self.submodel.optimize()
+            [sm.update_fixed_vars(self) for sm in self.submodels.itervalues()]
+            [sm.optimize() for sm in self.submodels.itervalues()]
             self._add_cut()
             self._update_bounds()
             self._save_vars()
@@ -86,7 +86,7 @@ class Benders_Master:
         self.data.bigM = 10000
 
     def _load_network(self):
-        self.data.G = load_network(nodefile='24bus-data/nodes.csv', linefile='24bus-data/lines.csv')
+        self.data.G = load_network(nodefile='24bus-data_3Z/nodes.csv', linefile='24bus-data_3Z/lines.csv')
         self.data.nodeorder = self.data.G.nodes()
         self.data.lineorder = self.data.G.edges()
         self.data.linelimit = nx.get_edge_attributes(self.data.G, 'limit')
@@ -104,7 +104,7 @@ class Benders_Master:
         pass
 
     def _load_generator_data(self):
-        self.data.gendf = load_generators(generatorfile='24bus-data/generators.csv')
+        self.data.gendf = load_generators(generatorfile='24bus-data_3Z/generators.csv')
         self.data.generators = self.data.gendf.index
         self.data.generatorinfo = self.data.gendf.T.to_dict()
         self.data.gen_to_node = self.data.gendf.origin.to_dict()
@@ -115,8 +115,8 @@ class Benders_Master:
 
     def _load_intial_data(self, initial_wind_da, initial_wind_rt, initial_load):
         self.data.taus = [1]  # np.arange(len(initial_load.T))
-        self.data.scenarios = [0, 1]
-        self.data.scenarioprobs = [0.5, 0.5]
+        self.data.scenarios = ['s0', 's1', 's2', 's3']
+        self.data.scenarioprobs = {s: 1.0/len(self.data.scenarios) for s in self.data.scenarios}
         self.data.load_n_rt = initial_load.to_dict()
         self.data.load_z_da = {z: sum(self.data.load_n_rt[n] for n in self.data.zone_to_nodes[z]) for z in self.data.zoneorder}
         self.data.wind_n_rt = initial_wind_rt.to_dict()
@@ -490,8 +490,8 @@ class Benders_Master:
         sens = {}
         for g in generators:
             for t in taus:
-                sens[g, t] = self.submodel.constraints.fix_da_production[g, t].pi
-        z_sub = self.submodel.model.ObjVal
+                sens[g, t] = sum(self.data.scenarioprobs[s] * self.submodels[s].constraints.fix_da_production[g, t].pi for s in self.data.scenarios)
+        z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
         self.data.lambdas[cut] = sens
         # Generate cut
         self.constraints.cuts[cut] = self.model.addConstr(
@@ -520,7 +520,7 @@ class Benders_Master:
         taus = self.data.taus
         generators = self.data.generators
         zones = self.data.zoneorder
-        z_sub = self.submodel.model.ObjVal
+        z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
         z_master = self.model.ObjVal
         self.data.ub = \
             z_master - self.variables.alpha.x + z_sub \
@@ -541,13 +541,13 @@ class Benders_Master:
 
 import pandas as pd
 
-load = pd.read_csv('24bus-data/load.csv')
-wind_da = pd.read_csv('24bus-data/wind.csv')
-wind_rt = pd.read_csv('24bus-data/wind.csv')
+load = pd.read_csv('24bus-data_3Z/load.csv')
+wind_da = pd.read_csv('24bus-data_3Z/wind.csv')
+wind_rt = pd.read_csv('24bus-data_3Z/wind.csv')
 
 load = load.set_index('Time').ix[1]
-wind_da = wind_da.set_index('Time').ix[1].set_index('Scenario').mean(axis=0)*100
-wind_rt = wind_rt.set_index('Time').ix[1].set_index('Scenario')*100
+wind_da = wind_da.set_index('Time').ix[12].set_index('Scenario').mean(axis=0)*100
+wind_rt = wind_rt.set_index('Time').ix[12].set_index('Scenario')*100
 
 m = Benders_Master(wind_da, wind_rt, load)
 
@@ -556,7 +556,7 @@ raise SystemExit
 import numpy as np
 
 res = {}
-atcs = np.linspace(0, 6000, 51)
+atcs = np.linspace(0, 1000, 51)
 for atc in atcs:
     m = Benders_Master(wind_da, wind_rt, load)
     for x in m.variables.ATC.values():
@@ -564,3 +564,28 @@ for atc in atcs:
         x.lb = atc
     m.optimize()
     res[atc] = m.data.lb
+
+raise SystemExit
+
+# For 3-zone system only
+keys = m.variables.ATC.keys()
+k1, k2 = keys[0], keys[1]
+oatc1, oatc2 = [m.variables.ATC[k].x for k in keys]
+
+atcs1, atcs2 = np.meshgrid(np.linspace(0.0, 2.0, 21), np.linspace(0.0, 2.0, 21))
+atcs1, atcs2 = atcs1*oatc1, atcs2*oatc2
+res = []
+for atc1, atc2 in izip(atcs1.flat, atcs2.flat):
+    m = Benders_Master(wind_da, wind_rt, load)
+    m.variables.ATC[k1].ub = atc1
+    m.variables.ATC[k1].lb = atc1
+    m.variables.ATC[k2].ub = atc2
+    m.variables.ATC[k2].lb = atc2
+    m.optimize()
+    res.append(m.data.lb)
+
+res = np.reshape(res, atcs1.shape)
+
+plt.contourf(atcs1, atcs2, res, levels=np.linspace(8000, 10000, 51), cmap=plt.cm.BuPu)
+CS = plt.contour(atcs1, atcs2, res, levels np.linspace(8000, 10000, 9), cmap=plt.cm.GnBu_r)
+plt.clabel(CS)
