@@ -1,4 +1,5 @@
 # Import Gurobi Library
+import numpy as np
 import gurobipy as gb
 import networkx as nx
 import defaults
@@ -7,9 +8,8 @@ import pickle
 from itertools import izip
 from collections import defaultdict
 
-from symmetrize_dict import symmetrize_dict, unsymmetrize_list
+from myhelpers import invert_dict, symmetrize_dict, unsymmetrize_list
 from load_fnct import load_network, load_generators
-from invert_dict import invert_dict
 
 from benders_bilevel_subproblem import Benders_Subproblem
 
@@ -24,6 +24,12 @@ class expando(object):
     pass
 
 
+def split_binary(x):
+    if x <= 0.5:
+        return 0
+    return 1
+
+
 # Optimization class
 class Benders_Master:
     '''
@@ -32,50 +38,63 @@ class Benders_Master:
         t is the number of timesteps to optimize over.
         Note, that t is fixed by this inital assignment]
     '''
-    def __init__(self, initial_wind_da, initial_wind_rt, initial_load, epsilon=0.001):
+    def __init__(self, initial_wind_da, initial_wind_rt, initial_load, epsilon=0.001, delta=0.001, loaddir='24bus-data_3Z/', verbose=True):
         self.data = expando()
         self.variables = expando()
         self.constraints = expando()
         self.results = expando()
-        self._init_benders_params(epsilon=epsilon)
+        self.data.loaddir = loaddir
+        self.verbose = verbose
+        self._init_benders_params(epsilon=epsilon, delta=delta)
         self._load_data(initial_wind_da, initial_wind_rt, initial_load)
         self._build_model()
 
-    def optimize(self, simple_results=False):
+    def optimize(self, simple_results=False, force_submodel_rebuild=False):
         # Initial solution
         self.model.optimize()
-        # Build subproblem from solution
-        self.submodels = {s: Benders_Subproblem(self, scenario=s) for s in self.data.scenarios}
-        # In future, update to list of subproblems
-        # OR subproblem class is extended to contain multiple optimization problems
-        # (better encapsulation in second approach, better modularity in first).
+        # Only build submodels if they don't exist or a rebuild is forced.
+        if hasattr(self, 'submodels'):
+            if force_submodel_rebuild:
+                self.submodels = {s: Benders_Subproblem(self, scenario=s) for s in self.data.scenarios}
+        else:
+            self.submodels = {s: Benders_Subproblem(self, scenario=s) for s in self.data.scenarios}
         [sm.update_fixed_vars(self) for sm in self.submodels.itervalues()]
         [sm.optimize() for sm in self.submodels.itervalues()]
-        self._add_cut()
         self._update_bounds()
         self._save_vars()
-        self.model.update()
-        while self.data.ub > self.data.lb + self.data.epsilon and len(self.data.cutlist) < 10:
-            self.model.reset()
+        # Build cuts until we reach absolute and relative tolerance, or 10 cuts have been generated.
+        while (self.data.ub > self.data.lb + self.data.delta or self.data.ub - self.data.lb > abs(self.data.epsilon * self.data.lb)) and len(self.data.cutlist) < 25:
+            if self.verbose:
+                print('********')
+                print('* Benders\' step {0}:'.format(len(self.data.upper_bounds)))
+                print('* Upper bound: {0}'.format(self.data.ub))
+                print('* Lower bound: {0}'.format(self.data.lb))
+                print('********')
+            self._add_cut()
+            # self.model.update()
+            self._start_from_previous()
             self.model.optimize()
             [sm.update_fixed_vars(self) for sm in self.submodels.itervalues()]
             [sm.optimize() for sm in self.submodels.itervalues()]
-            self._add_cut()
             self._update_bounds()
             self._save_vars()
         pass
 
+# m._save_vars()
     ###
     #   Loading functions
     ###
 
-    def _init_benders_params(self, epsilon=0.001):
+    def _init_benders_params(self, epsilon=0.001, delta=0.001):
         self.data.cutlist = []
         self.data.upper_bounds = []
         self.data.lower_bounds = []
+        self.data.mipgap = []
+        self.data.solvetime = []
         self.data.alphas = []
         self.data.lambdas = {}
         self.data.epsilon = epsilon
+        self.data.delta = delta
         self.data.ub = gb.GRB.INFINITY
         self.data.lb = -gb.GRB.INFINITY
 
@@ -83,10 +102,11 @@ class Benders_Master:
         self._load_network()
         self._load_generator_data()
         self._load_intial_data(initial_wind_da, initial_wind_rt, initial_load)
-        self.data.bigM = 10000
+        self.data.bigM = defaults.bigM
+        self.data.ATCweight = 0.000001
 
     def _load_network(self):
-        self.data.G = load_network(nodefile='24bus-data_3Z/nodes.csv', linefile='24bus-data_3Z/lines.csv')
+        self.data.G = load_network(nodefile=self.data.loaddir + 'nodes.csv', linefile=self.data.loaddir + 'lines.csv')
         self.data.nodeorder = self.data.G.nodes()
         self.data.lineorder = self.data.G.edges()
         self.data.linelimit = nx.get_edge_attributes(self.data.G, 'limit')
@@ -104,22 +124,26 @@ class Benders_Master:
         pass
 
     def _load_generator_data(self):
-        self.data.gendf = load_generators(generatorfile='24bus-data_3Z/generators.csv')
+        self.data.gendf = load_generators(generatorfile=self.data.loaddir + 'generators.csv')
         self.data.generators = self.data.gendf.index
         self.data.generatorinfo = self.data.gendf.T.to_dict()
         self.data.gen_to_node = self.data.gendf.origin.to_dict()
         self.data.node_to_generators = invert_dict(self.data.gen_to_node)
-        self.data.gen_to_zone = self.data.gendf.country.to_dict()
+        self.data.gen_to_zone = {g: self.data.node_to_zone[n] for g, n in self.data.gen_to_node.iteritems()}
         self.data.zone_to_generators = invert_dict(self.data.gen_to_zone)
         pass
 
     def _load_intial_data(self, initial_wind_da, initial_wind_rt, initial_load):
         self.data.taus = [1]  # np.arange(len(initial_load.T))
-        self.data.scenarios = ['s0', 's1', 's2', 's3']
+        self.data.scenarios = np.unique(list(initial_wind_rt.index))  # List transform for compatibility.
         self.data.scenarioprobs = {s: 1.0/len(self.data.scenarios) for s in self.data.scenarios}
+        # !
         self.data.load_n_rt = initial_load.to_dict()
+        # !
         self.data.load_z_da = {z: sum(self.data.load_n_rt[n] for n in self.data.zone_to_nodes[z]) for z in self.data.zoneorder}
+        # !
         self.data.wind_n_rt = initial_wind_rt.to_dict()
+        # !
         self.data.wind_z_da = {z: sum(initial_wind_da[n] for n in self.data.zone_to_nodes[z]) for z in self.data.zoneorder}
 
     ###
@@ -127,6 +151,7 @@ class Benders_Master:
     ###
     def _build_model(self):
         self.model = gb.Model()
+        # self.model.setParam('OutputFlag', False)
         self._build_variables()
         self._build_objective()
         self._build_constraints()
@@ -152,26 +177,26 @@ class Benders_Master:
         self.variables.gprod_da = {}
         for t in taus:
             for g in generators:
-                self.variables.gprod_da[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'], name='{0} prod at {1}'.format(g, t))
-
+                self.variables.gprod_da[g, t] = m.addVar(lb=0.0, ub=gendata[g]['capacity'], name='gen{0} prod at {1}'.format(g, t))
+        # !
         # Renewables and load spilled in zone z at time t
         self.variables.winduse_da, self.variables.loadshed_da = {}, {}
         for t in taus:
             for z in zones:
-                self.variables.winduse_da[z, t] = m.addVar(lb=0.0, ub=wind_z_da[z], name='{0} winduse at {1}'.format(z, t))
-                self.variables.loadshed_da[z, t] = m.addVar(lb=0.0, ub=load_z_da[z], name='{0} loadshed at {1}'.format(z, t))
+                self.variables.winduse_da[z, t] = m.addVar(lb=0.0, ub=wind_z_da[z], name='z{0} winduse at {1}'.format(z, t))
+                self.variables.loadshed_da[z, t] = m.addVar(lb=0.0, ub=load_z_da[z], name='z{0} loadshed at {1}'.format(z, t))
 
         # Power flow on edge e
         self.variables.edgeflow_da = {}
         for e in edges:
             for t in taus:
-                self.variables.edgeflow_da[e, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY, name='{0} edgeflow at {1}'.format(e, t))
+                self.variables.edgeflow_da[e, t] = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY, name='zl{0} edgeflow at {1}'.format(e, t))
 
         # Power flow limit on edge e
         self.variables.ATC = {}
         for e in edges:
             for t in taus:
-                self.variables.ATC[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY, name='{0} ATC at {1}'.format(e, t))
+                self.variables.ATC[e, t] = m.addVar(lb=0.0, ub=gb.GRB.INFINITY, name='zl{0} ATC at {1}'.format(e, t))
 
         ###
         #  Dual variables
@@ -262,7 +287,7 @@ class Benders_Master:
                 self.variables.loadshed_da[z, t]*defaults.VOLL
                 for z in zones for t in taus)
             + self.variables.alpha
-            + gb.quicksum(0.1*self.variables.ATC[e, t] for e in self.data.edgeorder for t in taus),
+            + gb.quicksum(self.data.ATCweight*self.variables.ATC[e, t] for e in self.data.edgeorder for t in taus),
             gb.GRB.MINIMIZE)
 
     def _build_constraints(self):
@@ -280,6 +305,7 @@ class Benders_Master:
         # Primal constraints
         ###
 
+        # !
         # DA power balance
         self.constraints.powerbalance_da = {}
         for z in zones:
@@ -291,7 +317,6 @@ class Benders_Master:
                     + gb.quicksum(self.variables.edgeflow_da[e, t] for e in edges if e[1] == z),
                     gb.GRB.EQUAL,
                     self.data.load_z_da[z])
-                # self.data.load_z_da[z, t]) # !!!
 
         # ATC edge flow limits
         self.constraints.ATC_limit_up = {}
@@ -365,13 +390,13 @@ class Benders_Master:
             for g in generators:
                 self.constraints.cs_gprod_up_da_d[g, t] = m.addConstr(
                     self.variables.d_gprod_da_up[g, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_gprod_da_up[g, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_gprod_da_up[g, t])
                 self.constraints.cs_gprod_up_da_p[g, t] = m.addConstr(
                     self.variables.gprod_da[g, t].ub - self.variables.gprod_da[g, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_gprod_da_up[g, t]))
                 self.constraints.cs_gprod_down_da_d[g, t] = m.addConstr(
                     self.variables.d_gprod_da_down[g, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_gprod_da_down[g, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_gprod_da_down[g, t])
                 self.constraints.cs_gprod_down_da_p[g, t] = m.addConstr(
                     self.variables.gprod_da[g, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_gprod_da_down[g, t]))
@@ -385,13 +410,13 @@ class Benders_Master:
             for z in zones:
                 self.constraints.cs_winduse_up_da_d[z, t] = m.addConstr(
                     self.variables.d_winduse_da_up[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_winduse_da_up[z, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_winduse_da_up[z, t])
                 self.constraints.cs_winduse_up_da_p[z, t] = m.addConstr(
                     self.variables.winduse_da[z, t].ub - self.variables.winduse_da[z, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_winduse_da_up[z, t]))
                 self.constraints.cs_winduse_down_da_d[z, t] = m.addConstr(
                     self.variables.d_winduse_da_down[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_winduse_da_down[z, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_winduse_da_down[z, t])
                 self.constraints.cs_winduse_down_da_p[z, t] = m.addConstr(
                     self.variables.winduse_da[z, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_winduse_da_down[z, t]))
@@ -405,16 +430,16 @@ class Benders_Master:
             for z in zones:
                 self.constraints.cs_loadshed_up_da_d[z, t] = m.addConstr(
                     self.variables.d_loadshed_da_up[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_loadshed_da_up[z, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_loadshed_da_up[z, t])
                 self.constraints.cs_loadshed_up_da_p[z, t] = m.addConstr(
                     self.variables.loadshed_da[z, t].ub - self.variables.loadshed_da[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_loadshed_da_up[z, t]))
+                    gb.GRB.LESS_EQUAL, self.variables.loadshed_da[z, t].ub * (1 - self.variables.bc_loadshed_da_up[z, t]))
                 self.constraints.cs_loadshed_down_da_d[z, t] = m.addConstr(
                     self.variables.d_loadshed_da_down[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_loadshed_da_down[z, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_loadshed_da_down[z, t])
                 self.constraints.cs_loadshed_down_da_p[z, t] = m.addConstr(
                     self.variables.loadshed_da[z, t],
-                    gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_loadshed_da_down[z, t]))
+                    gb.GRB.LESS_EQUAL, self.variables.loadshed_da[z, t].ub * (1 - self.variables.bc_loadshed_da_down[z, t]))
 
         # Edge flow limits
         self.constraints.cs_edgeflow_up_da_p = {}
@@ -425,13 +450,13 @@ class Benders_Master:
             for e in edges:
                 self.constraints.cs_edgeflow_up_da_d[e, t] = m.addConstr(
                     self.variables.d_edgeflow_da_up[e, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_edgeflow_da_up[e, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_edgeflow_da_up[e, t])
                 self.constraints.cs_edgeflow_up_da_p[e, t] = m.addConstr(
                     self.variables.ATC[e, t] - self.variables.edgeflow_da[e, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_edgeflow_da_up[e, t]))
                 self.constraints.cs_edgeflow_down_da_d[e, t] = m.addConstr(
                     self.variables.d_edgeflow_da_down[e, t],
-                    gb.GRB.LESS_EQUAL, bigM * self.variables.bc_edgeflow_da_down[e, t])
+                    gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_edgeflow_da_down[e, t])
                 self.constraints.cs_edgeflow_down_da_p[e, t] = m.addConstr(
                     self.variables.ATC[e, t] + self.variables.edgeflow_da[e, t],
                     gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_edgeflow_da_down[e, t]))
@@ -439,38 +464,55 @@ class Benders_Master:
         # Bender's optimality cuts
         self.constraints.cuts = {}
 
-        ###
-        # SPEED ONLY
-        # Up/down constraints cannot be active at same time.
         # ###
-        # self.constraints.ud_gprod_da = {}
-        # for t in taus:
-        #     for g in generators:
-        #         self.constraints.ud_gprod_da[g, t] = m.addConstr(
-        #             self.variables.bc_gprod_da_up[g, t]
-        #             + self.variables.bc_gprod_da_down[g, t],
-        #             gb.GRB.LESS_EQUAL, 1.01)
+        # # SPEED ONLY
+        # # Up/down constraints cannot be active at same time.
+        # # ###
+        self.constraints.ud_gprod_da = {}
+        for t in taus:
+            for g in generators:
+                self.constraints.ud_gprod_da[g, t] = m.addConstr(
+                    self.variables.bc_gprod_da_up[g, t]
+                    + self.variables.bc_gprod_da_down[g, t],
+                    gb.GRB.LESS_EQUAL, 1.0)
 
-        # self.constraints.ud_winduse_da = {}
-        # self.constraints.ud_loadshed_da = {}
+        self.constraints.ud_winduse_da = {}
+        self.constraints.ud_loadshed_da = {}
+        for t in taus:
+            for z in zones:
+                self.constraints.ud_winduse_da[z, t] = m.addConstr(
+                    self.variables.bc_winduse_da_up[z, t]
+                    + self.variables.bc_winduse_da_down[z, t],
+                    gb.GRB.LESS_EQUAL, 1.0)
+                self.constraints.ud_loadshed_da[z, t] = m.addConstr(
+                    self.variables.bc_loadshed_da_up[z, t]
+                    + self.variables.bc_loadshed_da_down[z, t],
+                    gb.GRB.LESS_EQUAL, 1.0)
+
+        self.constraints.ud_edgeflow_da = {}
+        for t in taus:
+            for e in edges:
+                self.constraints.ud_edgeflow_da[e, t] = m.addConstr(
+                    self.variables.bc_edgeflow_da_up[e, t]
+                    + self.variables.bc_edgeflow_da_down[e, t],
+                    gb.GRB.LESS_EQUAL, 1.0)
+
+        # ###
+        # # SPEED ONLY
+        # # We have strict merit-order activation of units in each zone.
+        # # Found to slow down dramatically for later iterations.
+        # ###
+        # self.constraints.b_meritorder_gprod_da = {}
         # for t in taus:
         #     for z in zones:
-        #         self.constraints.ud_winduse_da[z, t] = m.addConstr(
-        #             self.variables.bc_winduse_da_up[z, t]
-        #             + self.variables.bc_winduse_da_down[z, t],
-        #             gb.GRB.LESS_EQUAL, 1.01)
-        #         self.constraints.ud_loadshed_da[z, t] = m.addConstr(
-        #             self.variables.bc_loadshed_da_up[z, t]
-        #             + self.variables.bc_loadshed_da_down[z, t],
-        #             gb.GRB.LESS_EQUAL, 1.01)
-
-        # self.constraints.ud_edgeflow_da = {}
-        # for t in taus:
-        #     for e in edges:
-        #         self.constraints.ud_edgeflow_da[e, t] = m.addConstr(
-        #             self.variables.bc_edgeflow_da_up[e, t]
-        #             + self.variables.bc_edgeflow_da_down[e, t],
-        #             gb.GRB.LESS_EQUAL, 1.01)
+        #         gens = self.data.zone_to_generators[z]
+        #         # Sort by merit order
+        #         gens = sorted(gens, key=lambda x: self.data.generatorinfo[x]['lincost'])
+        #         for glow, ghigh in izip(gens[:-1], gens[1:]):
+        #             # If glow is not at upper bound, don't activate ghigh
+        #             self.constraints.b_meritorder_gprod_da[z, t, glow, ghigh] = m.addConstr(
+        #                 1 - self.variables.bc_gprod_da_up[glow, t],
+        #                 gb.GRB.LESS_EQUAL, self.variables.bc_gprod_da_down[ghigh, t])
 
         pass
 
@@ -508,84 +550,128 @@ class Benders_Master:
 
     def _clear_cuts(self):
         self.data.cutlist = []
-        self.data.lambdas = []
+        self.data.lambdas = {}
+        self.model.update()
         for con in self.constraints.cuts.values():
             self.model.remove(con)
         self.constraints.cuts = {}
+        self.data.ub = gb.GRB.INFINITY
+        self.data.lb = -gb.GRB.INFINITY
+        self.data.upper_bounds = []
+        self.data.lower_bounds = []
 
     ###
-    # Update upper and lower bounds
+    # Update upper and lower bounds for Benders' iterations
     ###
     def _update_bounds(self):
         taus = self.data.taus
         generators = self.data.generators
         zones = self.data.zoneorder
         z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
-        z_master = self.model.ObjVal
+        z_master = self.model.ObjVal - sum(self.data.ATCweight*self.variables.ATC[e, t].x for e in self.data.edgeorder for t in taus)
         self.data.ub = \
             z_master - self.variables.alpha.x + z_sub \
             - sum(
                 defaults.VOLL * self.variables.loadshed_da[z, t].x
                 + defaults.renew_price * self.variables.winduse_da[z, t].x
                 for z in zones for t in taus)
-        self.data.lb = z_master
+        # The best lower bound is the current bestbound,
+        # This will equal z_master at optimality
+        self.data.lb = self.model.ObjBound - sum(self.data.ATCweight*self.variables.ATC[e, t].x for e in self.data.edgeorder for t in taus)
         self.data.upper_bounds.append(self.data.ub)
         self.data.lower_bounds.append(self.data.lb)
+        self.data.mipgap.append(self.model.params.IntFeasTol)
+        self.data.solvetime.append(self.model.Runtime)
 
     def _save_vars(self):
         # self.data.xs.append(self.variables.x.x)
         # self.data.ys.append(self.submodel.variables.y.x)
         self.data.alphas.append(self.variables.alpha.x)
 
-# Temporary testing code
+    ###
+    # Check complementarity constraints
+    ###
+    def _fix_complementarity(self):
+        self._calculate_complementarity()
+        self._reduce_nonzero_bigMs()
 
-import pandas as pd
+    def _calculate_complementarity(self):
+        taus = self.data.taus
+        generators = self.data.generators
+        gendata = self.data.generatorinfo
+        zones = self.data.zoneorder
+        edges = self.data.edgeorder
+        bigM = self.data.bigM
 
-load = pd.read_csv('24bus-data_3Z/load.csv')
-wind_da = pd.read_csv('24bus-data_3Z/wind.csv')
-wind_rt = pd.read_csv('24bus-data_3Z/wind.csv')
+        # Generator production
+        self.results.cs_gprod_up_da = {}
+        self.results.cs_gprod_down_da = {}
+        for t in taus:
+            for g in generators:
+                self.results.cs_gprod_up_da[g, t] = \
+                    self.variables.d_gprod_da_up[g, t].x * (self.variables.gprod_da[g, t].ub - self.variables.gprod_da[g, t].x)
+                self.results.cs_gprod_down_da[g, t] = \
+                    self.variables.d_gprod_da_down[g, t].x * self.variables.gprod_da[g, t].x
 
-load = load.set_index('Time').ix[1]
-wind_da = wind_da.set_index('Time').ix[12].set_index('Scenario').mean(axis=0)*100
-wind_rt = wind_rt.set_index('Time').ix[12].set_index('Scenario')*100
+        # Wind usage
+        self.results.cs_winduse_up_da = {}
+        self.results.cs_winduse_down_da = {}
+        for t in taus:
+            for z in zones:
+                self.results.cs_winduse_up_da[z, t] = \
+                    self.variables.d_winduse_da_up[z, t].x * (self.variables.winduse_da[z, t].ub - self.variables.winduse_da[z, t].x)
+                self.results.cs_winduse_down_da[z, t] = self.variables.d_winduse_da_down[z, t].x * self.variables.winduse_da[z, t].x
 
-m = Benders_Master(wind_da, wind_rt, load)
+        # Load shed limits
+        self.results.cs_loadshed_up_da = {}
+        self.results.cs_loadshed_down_da = {}
+        for t in taus:
+            for z in zones:
+                self.results.cs_loadshed_up_da[z, t] = \
+                    self.variables.d_loadshed_da_up[z, t].x * (self.variables.loadshed_da[z, t].ub - self.variables.loadshed_da[z, t].x)
+                self.results.cs_loadshed_down_da[z, t] = \
+                    self.variables.d_loadshed_da_down[z, t].x * self.variables.loadshed_da[z, t].x
 
-raise SystemExit
+        # Edge flow limits
+        self.constraints.cs_edgeflow_up_da = {}
+        self.constraints.cs_edgeflow_down_da = {}
+        for t in taus:
+            for e in edges:
+                self.constraints.cs_edgeflow_up_da[e, t] = \
+                    self.variables.d_edgeflow_da_up[e, t].x * (self.variables.ATC[e, t].x - self.variables.edgeflow_da[e, t])
+                self.constraints.cs_edgeflow_down_da[e, t] = \
+                    self.variables.d_edgeflow_da_down[e, t].x * (self.variables.ATC[e, t].x + self.variables.edgeflow_da[e, t])
 
-import numpy as np
+    def _reduce_nonzero_bigMs(self):
+        pass
 
-res = {}
-atcs = np.linspace(0, 1000, 51)
-for atc in atcs:
-    m = Benders_Master(wind_da, wind_rt, load)
-    for x in m.variables.ATC.values():
-        x.ub = atc
-        x.lb = atc
-    m.optimize()
-    res[atc] = m.data.lb
+    ###
+    # MIP start conditions
+    ###
+    def _start_from_previous(self):
 
-raise SystemExit
+        taus = self.data.taus
+        generators = self.data.generators
+        gendata = self.data.generatorinfo
+        zones = self.data.zoneorder
+        edges = self.data.edgeorder
 
-# For 3-zone system only
-keys = m.variables.ATC.keys()
-k1, k2 = keys[0], keys[1]
-oatc1, oatc2 = [m.variables.ATC[k].x for k in keys]
+        # Generation limits
+        for t in taus:
+            for g in generators:
+                self.variables.bc_gprod_da_up[g, t].start = self.variables.bc_gprod_da_up[g, t].x
+                self.variables.bc_gprod_da_down[g, t].start = self.variables.bc_gprod_da_down[g, t].x
 
-atcs1, atcs2 = np.meshgrid(np.linspace(0.0, 2.0, 21), np.linspace(0.0, 2.0, 21))
-atcs1, atcs2 = atcs1*oatc1, atcs2*oatc2
-res = []
-for atc1, atc2 in izip(atcs1.flat, atcs2.flat):
-    m = Benders_Master(wind_da, wind_rt, load)
-    m.variables.ATC[k1].ub = atc1
-    m.variables.ATC[k1].lb = atc1
-    m.variables.ATC[k2].ub = atc2
-    m.variables.ATC[k2].lb = atc2
-    m.optimize()
-    res.append(m.data.lb)
+        # Renewables and load spilled in node at time t
+        for t in taus:
+            for z in zones:
+                self.variables.bc_winduse_da_up[z, t].start = self.variables.bc_winduse_da_up[z, t].x
+                self.variables.bc_winduse_da_down[z, t].start = self.variables.bc_winduse_da_down[z, t].x
+                self.variables.bc_loadshed_da_up[z, t].start = self.variables.bc_loadshed_da_up[z, t].x
+                self.variables.bc_loadshed_da_down[z, t].start = self.variables.bc_loadshed_da_down[z, t].x
 
-res = np.reshape(res, atcs1.shape)
-
-plt.contourf(atcs1, atcs2, res, levels=np.linspace(8000, 10000, 51), cmap=plt.cm.BuPu)
-CS = plt.contour(atcs1, atcs2, res, levels np.linspace(8000, 10000, 9), cmap=plt.cm.GnBu_r)
-plt.clabel(CS)
+        # Power flow on edge e
+        for e in edges:
+            for t in taus:
+                self.variables.bc_edgeflow_da_up[e, t].start = self.variables.bc_edgeflow_da_up[e, t].x
+                self.variables.bc_edgeflow_da_down[e, t].start = self.variables.bc_edgeflow_da_down[e, t].x
