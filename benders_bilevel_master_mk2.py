@@ -64,22 +64,18 @@ class Benders_Master:
         print 'Update bounds'
         self._update_bounds()
         self._save_vars()
+        self._add_cut()
         # Build cuts until we reach absolute and relative tolerance, or 10 cuts have been generated.
         while (
-            self.data.ub > self.data.lb + self.data.delta or
-            self.data.ub - self.data.lb > abs(self.data.epsilon * self.data.lb)) \
-            and len(self.data.cutlist) < 25:
+                self.data.ub > self.data.lb + self.data.delta or
+                self.data.ub - self.data.lb > abs(self.data.epsilon * self.data.lb)) and \
+                len(self.data.cutlist) < 25:
             if self.verbose:
-                print('********')
-                print('* Benders\' step {0}:'.format(len(self.data.upper_bounds)))
-                print('* Upper bound: {0}'.format(self.data.ub))
-                print('* Lower bound: {0}'.format(self.data.lb))
-                print('********')
+                self._print_benders_info()
             self._do_benders_step()
         pass
 
     def _do_benders_step(self):
-            self._add_cut()
             # self.model.update()
             self._start_from_previous()
             self.model.optimize()
@@ -87,6 +83,16 @@ class Benders_Master:
             [sm.optimize() for sm in self.submodels.itervalues()]
             self._update_bounds()
             self._save_vars()
+            self._add_cut()
+
+    def _print_benders_info(self):
+        print('')
+        print('********')
+        print('* Benders\' step {0}:'.format(len(self.data.upper_bounds)))
+        print('* Upper bound: {0}'.format(self.data.ub))
+        print('* Lower bound: {0}'.format(self.data.lb))
+        print('********')
+        print('')
 
     ###
     #   Loading functions
@@ -104,6 +110,8 @@ class Benders_Master:
         self.data.delta = delta
         self.data.ub = gb.GRB.INFINITY
         self.data.lb = -gb.GRB.INFINITY
+        # Used to rescale alpha -> alpha/alphascalefactor to avoid numerical difficulties.
+        self.data.alphascalefactor = 100
 
     def _load_data(self, initial_wind_da, initial_wind_rt, initial_load):
         self._load_network()
@@ -272,16 +280,22 @@ class Benders_Master:
         self.variables.bc_edgeflow_da_down = {}
         for e in edges:
             for t in taus:
-                self.variables.bc_edgeflow_da_up[e, t] = m.addVar(vtype=gb.GRB.BINARY, name='d_up_zl{0} edgeflow at {1}'.format(e, t))
-                self.variables.bc_edgeflow_da_down[e, t] = m.addVar(vtype=gb.GRB.BINARY, name='d_down_zl{0} edgeflow at {1}'.format(e, t))
+                self.variables.bc_edgeflow_da_up[e, t] = m.addVar(vtype=gb.GRB.BINARY, name='b_up_zl{0} edgeflow at {1}'.format(e, t))
+                self.variables.bc_edgeflow_da_down[e, t] = m.addVar(vtype=gb.GRB.BINARY, name='b_down_zl{0} edgeflow at {1}'.format(e, t))
 
         # Benders' proxy variable
-        self.variables.alpha = m.addVar(lb=-10000.0, ub=gb.GRB.INFINITY, name='alpha')
+        # self.variables.alpha = m.addVar(lb=-10000.0, ub=gb.GRB.INFINITY, name='alpha')
 
+        self.variables.alpha = {}
+        for s in self.data.scenarios:
+            self.variables.alpha[s] = m.addVar(lb=-1000000.0, ub=gb.GRB.INFINITY, name='alpha_{0}'.format(s))
+
+        # Optimization variable (Used to hint at the lower bound)
+
+        self.variables.objvar = m.addVar(lb=-gb.GRB.INFINITY, ub=gb.GRB.INFINITY, name='ObjVar')
         m.update()
 
     def _build_objective(self):
-        # MISSING: Update this with alpha
         taus = self.data.taus
         zones = self.data.zoneorder
 
@@ -293,7 +307,8 @@ class Benders_Master:
                 self.variables.winduse_da[z, t]*defaults.renew_price +
                 self.variables.loadshed_da[z, t]*defaults.VOLL
                 for z in zones for t in taus)
-            + self.variables.alpha
+            + gb.quicksum(self.data.scenarioprobs[s] * self.variables.alpha[s] for s in self.data.scenarios)
+            # + self.variables.alpha
             + gb.quicksum(self.data.ATCweight*self.variables.ATC[e, t] for e in self.data.edgeorder for t in taus),
             gb.GRB.MINIMIZE)
 
@@ -460,13 +475,13 @@ class Benders_Master:
                     gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_edgeflow_da_up[e, t])
                 self.constraints.cs_edgeflow_up_da_p[e, t] = m.addConstr(
                     self.variables.ATC[e, t] - self.variables.edgeflow_da[e, t],
-                    gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_edgeflow_da_up[e, t]))
+                    gb.GRB.LESS_EQUAL, 10 * bigM * (1 - self.variables.bc_edgeflow_da_up[e, t]))
                 self.constraints.cs_edgeflow_down_da_d[e, t] = m.addConstr(
                     self.variables.d_edgeflow_da_down[e, t],
                     gb.GRB.LESS_EQUAL, 10 * bigM * self.variables.bc_edgeflow_da_down[e, t])
                 self.constraints.cs_edgeflow_down_da_p[e, t] = m.addConstr(
                     self.variables.ATC[e, t] + self.variables.edgeflow_da[e, t],
-                    gb.GRB.LESS_EQUAL, bigM * (1 - self.variables.bc_edgeflow_da_down[e, t]))
+                    gb.GRB.LESS_EQUAL, 10 * bigM * (1 - self.variables.bc_edgeflow_da_down[e, t]))
 
         # Bender's optimality cuts
         self.constraints.cuts = {}
@@ -507,52 +522,86 @@ class Benders_Master:
         ###
         # SPEED ONLY
         # We have strict merit-order activation of units in each zone.
-        # Found to slow down dramatically for later iterations.
-        ###
-        self.constraints.b_meritorder_gprod_da = {}
-        for t in taus:
-            for z in zones:
-                gens = self.data.zone_to_generators[z]
-                # Sort by merit order
-                gens = sorted(gens, key=lambda x: self.data.generatorinfo[x]['lincost'])
-                for glow, ghigh in izip(gens[:-1], gens[1:]):
-                    # If glow is not at upper bound, don't activate ghigh
-                    self.constraints.b_meritorder_gprod_da[z, t, glow, ghigh] = m.addConstr(
-                        1 - self.variables.bc_gprod_da_up[glow, t],
-                        gb.GRB.LESS_EQUAL, self.variables.bc_gprod_da_down[ghigh, t])
+        # Found to slow down dramatically with IntFeasTol<10^-5
+        # ###
+        # self.constraints.b_meritorder_gprod_da = {}
+        # for t in taus:
+        #     for z in zones:
+        #         gens = self.data.zone_to_generators[z]
+        #         # Sort by merit order
+        #         gens = sorted(gens, key=lambda x: self.data.generatorinfo[x]['lincost'])
+        #         for glow, ghigh in izip(gens[:-1], gens[1:]):
+        #             # If glow is not at upper bound, don't activate ghigh
+        #             self.constraints.b_meritorder_gprod_da[z, t, glow, ghigh] = m.addConstr(
+        #                 1 - self.variables.bc_gprod_da_up[glow, t],
+        #                 gb.GRB.LESS_EQUAL, self.variables.bc_gprod_da_down[ghigh, t])
+        #             self.constraints.b_meritorder_gprod_da[z, t, glow, ghigh].lazy = True
 
         pass
 
     ###
     # Cut adding
-    ###
+    # ###
+
+    # def _add_cut(self):
+
+    #     taus = self.data.taus
+    #     generators = self.data.generators
+    #     zones = self.data.zoneorder
+
+    #     cut = len(self.data.cutlist)
+    #     self.data.cutlist.append(cut)
+    #     x = self.variables.gprod_da
+    #     # Get sensitivity from subproblem
+    #     sens = {}
+    #     for g in generators:
+    #         for t in taus:
+    #             sens[g, t] = sum(self.data.scenarioprobs[s] * self.submodels[s].constraints.fix_da_production[g, t].pi for s in self.data.scenarios)
+    #     z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
+    #     self.data.lambdas[cut] = sens
+    #     # Generate cut
+    #     self.constraints.cuts[cut] = self.model.addConstr(
+    #         self.variables.alpha,
+    #         gb.GRB.GREATER_EQUAL,
+    #         z_sub
+    #         - sum(
+    #             defaults.VOLL * self.variables.loadshed_da[z, t].x
+    #             + defaults.renew_price * self.variables.winduse_da[z, t].x
+    #             for z in zones for t in taus)
+    #         + gb.quicksum(sens[g, t] * x[g, t] for g in generators for t in taus)
+    #         - sum(sens[g, t] * x[g, t].x for g in generators for t in taus))
+    #     # update model
+
+    # LEGACY: Attempt to use multicuts
     def _add_cut(self):
 
         taus = self.data.taus
         generators = self.data.generators
         zones = self.data.zoneorder
 
-        cut = len(self.data.cutlist)
-        self.data.cutlist.append(cut)
+        cutno = len(self.data.cutlist)
+        self.data.cutlist.append(cutno)
         x = self.variables.gprod_da
-        # Get sensitivity from subproblem
-        sens = {}
-        for g in generators:
-            for t in taus:
-                sens[g, t] = sum(self.data.scenarioprobs[s] * self.submodels[s].constraints.fix_da_production[g, t].pi for s in self.data.scenarios)
-        z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
-        self.data.lambdas[cut] = sens
-        # Generate cut
-        self.constraints.cuts[cut] = self.model.addConstr(
-            self.variables.alpha,
-            gb.GRB.GREATER_EQUAL,
-            z_sub
-            - sum(
-                defaults.VOLL * self.variables.loadshed_da[z, t].x
-                + defaults.renew_price * self.variables.winduse_da[z, t].x
-                for z in zones for t in taus)
-            + gb.quicksum(sens[g, t] * x[g, t] for g in generators for t in taus)
-            - sum(sens[g, t] * x[g, t].x for g in generators for t in taus))
+        # Construct Benders' multicuts
+        for s in self.data.scenarios:
+            # Get sensitivity from subproblem
+            sens = {}
+            for g in generators:
+                for t in taus:
+                    sens[g, t] = self.submodels[s].constraints.fix_da_production[g, t].pi
+            z_sub = self.submodels[s].model.ObjVal
+            self.data.lambdas[cutno, s] = sens
+            # Generate cut
+            self.constraints.cuts[cutno, s] = self.model.addConstr(
+                self.variables.alpha[s],
+                gb.GRB.GREATER_EQUAL,
+                z_sub
+                - sum(
+                    defaults.VOLL * self.variables.loadshed_da[z, t].x
+                    + defaults.renew_price * self.variables.winduse_da[z, t].x
+                    for z in zones for t in taus)
+                + gb.quicksum(sens[g, t] * x[g, t] for g in generators for t in taus)
+                - sum(sens[g, t] * x[g, t].x for g in generators for t in taus))
         # update model
 
     def _clear_cuts(self):
@@ -576,12 +625,20 @@ class Benders_Master:
         zones = self.data.zoneorder
         z_sub = sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
         z_master = self.model.ObjVal - sum(self.data.ATCweight*self.variables.ATC[e, t].x for e in self.data.edgeorder for t in taus)
+        # self.data.ub = \
+        #     z_master - self.variables.alpha.x + z_sub \
+        #     - sum(
+        #         defaults.VOLL * self.variables.loadshed_da[z, t].x
+        #         + defaults.renew_price * self.variables.winduse_da[z, t].x
+        #         for z in zones for t in taus)
         self.data.ub = \
-            z_master - self.variables.alpha.x + z_sub \
+            z_master - sum(self.data.scenarioprobs[s] * self.variables.alpha[s].x for s in self.data.scenarios) + z_sub \
             - sum(
                 defaults.VOLL * self.variables.loadshed_da[z, t].x
                 + defaults.renew_price * self.variables.winduse_da[z, t].x
                 for z in zones for t in taus)
+        # self.data.ub = sum(self.data.generatorinfo[g]['lincost']*self.variables.gprod_da[g, t].x for g in self.data.generators for t in taus) + \
+        #     sum(self.data.scenarioprobs[s] * self.submodels[s].model.ObjVal for s in self.data.scenarios)
         # The best lower bound is the current bestbound,
         # This will equal z_master at optimality
         self.data.lb = self.model.ObjBound - sum(self.data.ATCweight*self.variables.ATC[e, t].x for e in self.data.edgeorder for t in taus)
@@ -591,9 +648,7 @@ class Benders_Master:
         self.data.solvetime.append(self.model.Runtime)
 
     def _save_vars(self):
-        # self.data.xs.append(self.variables.x.x)
-        # self.data.ys.append(self.submodel.variables.y.x)
-        self.data.alphas.append(self.variables.alpha.x)
+        self.data.alphas.append(self.variables.alpha)
 
     ###
     # Check complementarity constraints
@@ -656,7 +711,8 @@ class Benders_Master:
     # MIP start conditions
     ###
     def _start_from_previous(self):
-
+        if self.model.Status == gb.GRB.INFEASIBLE:
+            return
         taus = self.data.taus
         generators = self.data.generators
         gendata = self.data.generatorinfo
@@ -748,6 +804,7 @@ class Benders_Master:
                 self.variables.bc_edgeflow_da_down[e, t].lb = 0
 
     def _add_single_ATC_constraints(self):
+        m = self.model
         taus = self.data.taus
         edges = self.data.edgeorder
 
@@ -756,8 +813,35 @@ class Benders_Master:
 
         self.constraints.single_ATC = {}
         for e in edges:
-            for t1, t2 in taus[:-1], taus[1:]:
+            for t1, t2 in zip(taus[:-1], taus[1:]):
                 self.constraints.single_ATC[e, t1, t2] = m.addConstr(
                     self.variables.ATC[e, t1],
                     gb.GRB.EQUAL,
                     self.variables.ATC[e, t2])
+
+    def _solve_with_zero_ATCs(self):
+        '''
+            Solve for optimal ATCs when all ATCs = 0.
+            Useful for generating an initial feasible solution.
+        '''
+        atc_ubs = {}
+        for k, v in self.variables.ATC.iteritems():
+            atc_ubs[k] = v.ub
+            v.ub = 0
+        self.model.optimize()
+        # In case we find that some nodes are unable to balance themselves,
+        # open up all ATCs.
+        if self.model.Status == gb.GRB.INFEASIBLE:
+            for k, v in self.variables.ATC.iteritems():
+                v.ub = 100000
+                v.lb = 100000
+            self.model.optimize()
+        for k, v in self.variables.ATC.iteritems():
+            v.ub = atc_ubs[k]
+            v.lb = 0
+
+    # def _lower_bound_from_current(self):
+    #     '''
+    #         When iterating Benders' cuts, we know that we can never do worse than any previous lower bound when solving the MP
+    #     '''
+    #     self.variables.objvar.lb = self.model.ObjBound
