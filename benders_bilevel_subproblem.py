@@ -40,6 +40,7 @@ class Benders_Subproblem:
     ###
     def _build_model(self):
         self.model = gb.Model()
+        self.model.setParam('OutputFlag', False)
         self._build_variables()
         self._build_objective()
         self._build_constraints()
@@ -79,6 +80,7 @@ class Benders_Subproblem:
         self.variables.winduse_rt, self.variables.loadshed_rt = {}, {}
         for t in taus:
             for n in nodes:
+                # !
                 self.variables.winduse_rt[n, t] = m.addVar(lb=0.0, ub=wind_n_rt[n][sc])
                 self.variables.loadshed_rt[n, t] = m.addVar(lb=0.0, ub=load_n_rt[n])
 
@@ -89,7 +91,7 @@ class Benders_Subproblem:
                 ll = np.where(self.MP.data.linelimit[l] > 0, self.MP.data.linelimit[l], gb.GRB.INFINITY)
                 self.variables.lineflow_rt[l, t] = m.addVar(lb=-ll, ub=ll)
 
-        # Renewables and load spilled in zone z at time t
+        # Voltage angles
         self.variables.nodeangle = {}
         for t in taus:
             for n in nodes:
@@ -138,6 +140,7 @@ class Benders_Subproblem:
         self.constraints.powerbalance_rt = {}
         for n in nodes:
             for t in taus:
+                # !
                 self.constraints.powerbalance_rt[n, t] = m.addConstr(
                     gb.quicksum(self.variables.gprod_rt[gen, t] for gen in self.MP.data.node_to_generators[n])
                     + self.variables.loadshed_rt[n, t] + self.variables.winduse_rt[n, t]
