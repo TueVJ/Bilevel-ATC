@@ -54,14 +54,18 @@ class Benders_Master:
         # Initial solution
         self.model.optimize()
         # Only build submodels if they don't exist or a rebuild is forced.
-        print 'Build submodels'
+        if self.verbose:
+            print 'Build submodels'
         if not hasattr(self, 'submodels') or force_submodel_rebuild:
             self.submodels = {s: Benders_Subproblem(self, scenario=s) for s in self.data.scenarios}
-        print 'Update fixed vars'
+        if self.verbose:
+            print 'Update fixed vars'
         [sm.update_fixed_vars(self) for sm in self.submodels.itervalues()]
-        print 'Optimize Submodels'
+        if self.verbose:
+            print 'Optimize Submodels'
         [sm.optimize() for sm in self.submodels.itervalues()]
-        print 'Update bounds'
+        if self.verbose:
+            print 'Update bounds'
         self._update_bounds()
         self._save_vars()
         self._add_cut()
@@ -543,6 +547,7 @@ class Benders_Master:
     # Cut adding
     # ###
 
+    # LEGACY: This method does not use multicuts
     # def _add_cut(self):
 
     #     taus = self.data.taus
@@ -572,7 +577,6 @@ class Benders_Master:
     #         - sum(sens[g, t] * x[g, t].x for g in generators for t in taus))
     #     # update model
 
-    # LEGACY: Attempt to use multicuts
     def _add_cut(self):
 
         taus = self.data.taus
