@@ -1,2 +1,7 @@
 Winter: Forecasts from 20120101 12:00 for 20120102 hour 00 - 23, signals from 20120102 hour 00 - 23
 Summer: Forecasts from 20130614 12:00 for 20130615 hour 00 - 23, signals from 20130615 hour 00 - 23
+
+This data is from the RE-Europe Dataset (Licensed CC-BY-NC),
+For more details:
+https://zenodo.org/record/35177
+
