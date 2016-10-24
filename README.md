@@ -71,4 +71,4 @@ Major_axis axis: 2013-06-24 00:00:00 to 2013-06-24 23:00:00
 Minor_axis axis: 1 to 1514
 ```
 
-This file is available at **UPLOAD ME**
+To generate these scenarios, see [https://github.com/TueVJ/RE-Europe_SimpleEnsembles]
