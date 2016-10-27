@@ -1,4 +1,6 @@
-# Bilevel-ATC
+# Cost-optimal ATCs in Zonal Networks
+
+This repository is a companion to the paper [1], and optimizes the Available Transfer Capacity between zones in a zonal network. The scripts are meant to be used with the RE-Europe dataset [2] and scenarios generated as in [3]
 
 Packages needed (Tested version):
 
@@ -71,4 +73,9 @@ Major_axis axis: 2013-06-24 00:00:00 to 2013-06-24 23:00:00
 Minor_axis axis: 1 to 1514
 ```
 
-To generate these scenarios, see [https://github.com/TueVJ/RE-Europe_SimpleEnsembles]
+To generate these scenarios, see [3] 
+
+
+[1] Jensen, Kazempour, Pinson: "Cost-optimal ATCs in zonal networks" (2016) To be submitted to IEEE Transactions on Power Systems
+[2] [https://zenodo.org/record/35177]
+[3] [https://github.com/TueVJ/RE-Europe_SimpleEnsembles]
