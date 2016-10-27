@@ -77,5 +77,7 @@ To generate these scenarios, see [3]
 
 
 [1] Jensen, Kazempour, Pinson: "Cost-optimal ATCs in zonal networks" (2016) To be submitted to IEEE Transactions on Power Systems
+
 [2] [https://zenodo.org/record/35177]
+
 [3] [https://github.com/TueVJ/RE-Europe_SimpleEnsembles]
