@@ -16,7 +16,7 @@ colorcycle = sns.color_palette()
 plt.figure(figsize=(6, 4))
 ax2 = plt.axes()
 heurdf = resdf[resdf['Renewable Penetration'] == 0.5][resdf.Hour == 17].set_index('ProcessType')[['DA Cost', 'RT Cost']].T[['Nodal Stochastic', 'Nodal DA', 'Optimized\n(1% gap)', 'Min/Max flow']].T
-(heurdf/1000).rename(index={'Optimized\n(1% gap)':'Optimized'}).plot(kind='bar', ax=ax2, color=colorcycle)
+(heurdf/1000).rename(index={'Optimized\n(1% gap)': 'Optimized'}).plot(kind='bar', ax=ax2, color=colorcycle)
 rects = ax2.patches
 
 for i, rect in enumerate(rects):
@@ -44,12 +44,13 @@ plt.figure(figsize=(6, 4), dpi=150)
 ax3 = plt.axes()
 rtcost = resdf[resdf['Renewable Penetration'] == 0.5].groupby(['ProcessType', 'Hour'])['RT Cost'].mean()
 cdf = (rtcost/1000).reset_index().pivot_table(values='RT Cost', index='Hour', columns='ProcessType')[['Nodal Stochastic', 'Nodal DA', 'Optimized\n(1% gap)', 'Min/Max flow']]
-cdf = cdf.rename(columns={'Optimized\n(1% gap)': 'Optimized'})
+# cdf = cdf.rename(columns={'Optimized\n(1% gap)': 'Optimized'})
+cdf = cdf.rename(columns={'Nodal Stochastic': 'Nodal, stochastic', 'Nodal DA': 'Nodal, deterministic', 'Optimized\n(1% gap)': 'Zonal, ATCs by proposed method', 'Min/Max flow': 'Zonal, static ATCs from [9]'})
 colors = [sns.xkcd_rgb['charcoal'], sns.xkcd_rgb['deep red'], sns.xkcd_rgb['ocean blue'], '#60712F']
 markers = ['o', '|', '^', '.']
 for (cname, ser), marker, color in zip(cdf.iteritems(), markers, colors):
     ser.plot(label=cname, marker=marker, color=color)
-plt.ylabel(u'Expected hourly cost [k$]', fontsize=14)
+plt.ylabel(u'Final expected cost [k$]', fontsize=14)
 plt.xlabel(u'Hour', fontsize=14)
 plt.legend(loc='upper left')
 plt.yticks(fontsize=14)

@@ -78,7 +78,7 @@ ax1.set_ylabel('ATC [MW]')
 ax2 = ax1.twinx()
 c = sns.xkcd_rgb['deep blue']
 l3 = ax2.plot(linelimits, res, '--', c=c, label='Expected RT cost')
-ax2.set_ylabel('Expected total cost [$]')
+ax2.set_ylabel('Final expected cost [$]')
 # plt.grid()
 plt.legend([l1[0], l2[0], l3[0]], ['ATC, Z1 to Z2', 'ATC, Z2 to Z3', 'Final expected cost'], loc='center right')
 plt.tight_layout()
@@ -121,7 +121,7 @@ maxlevel = 18500
 
 plt.figure(figsize=(5, 4), dpi=200)
 ax = plt.axes()
-CF = plt.contourf(atcs1, atcs2, res, 151, cmap=plt.cm.RdYlGn_r, vmin=minlevel, vmax=maxlevel, extend='both')
+CF = plt.contourf(atcs1, atcs2, res, 151, cmap=plt.cm.Greys, vmin=minlevel, vmax=maxlevel, extend='both')
 for cface in CF.collections:
     cface.set_edgecolor("face")
 CS = plt.contour(atcs1, atcs2, res, levels=costlevels, colors='k')
@@ -172,7 +172,7 @@ maxlevel = 18500
 
 plt.figure(figsize=(5, 4), dpi=200)
 ax2 = plt.axes()
-CF = plt.contourf(atcs1, atcs2, res2, 151, cmap=plt.cm.RdYlGn_r, vmin=minlevel, vmax=maxlevel, extend='both')
+CF = plt.contourf(atcs1, atcs2, res2, 151, cmap=plt.cm.Greys, vmin=minlevel, vmax=maxlevel, extend='both')
 for cface in CF.collections:
     cface.set_edgecolor("face")
 CS = plt.contour(atcs1, atcs2, res2, levels=costlevels, colors='k')
@@ -182,6 +182,7 @@ plt.xlim([atcs1.min(), atcs1.max()])
 plt.ylim([atcs2.min(), atcs2.max()])
 plt.xlabel('ATC, Zone 1 to Zone 2 [MW]')
 plt.ylabel('ATC, Zone 2 to Zone 3 [MW]')
+plt.axhline(550, ls=':', c='k')
 plt.tight_layout()
 ax2.text(-0.22, 0.98, '(a)', transform=ax2.transAxes, size=16)
 plt.savefig('../pic/24bus-linecap-150.pdf')
