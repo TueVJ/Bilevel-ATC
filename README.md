@@ -45,6 +45,9 @@ Requires *optimal_driver_stoch_nodal_direct.py* to have been run.
 Plots Figure 4.
 Requires *heuristic_driver_stoch.py*  and to have been run for`loadhour in [1,...,24]`, and requires *save_nodal_stochastic_results.py* to have been run.
 
+*Solution_strategy.html*:
+Overview of the oslution strategy used to solve large-scale problem instances, as implemented in *benders_driver_stoch.py*.
+
 ## Files not provided
 
 Certain files are not provided due to space limitations. These are:
